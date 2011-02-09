@@ -86,7 +86,7 @@ namespace :blogger_feed do
       updated_data = feed.update_from_source options
       puts "#{updated_data.to_yaml}"
     rescue ActiveRecord::RecordInvalid => invalid
-      puts " x> Try to save a #{invalid.record.class.class_name} but has #{invalid.record.errors.count} errors: #{invalid.record.errors.full_messages.join('. And ')}"
+      puts " x> Try to save a #{invalid.record.class.name} but has #{invalid.record.errors.count} errors: #{invalid.record.errors.full_messages.join('. And ')}"
     rescue => error
       puts " x> #{error.class}: #{error.message}"
       print error.backtrace.join("\n")
