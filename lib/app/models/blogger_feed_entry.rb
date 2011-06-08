@@ -102,7 +102,7 @@ class BloggerFeedEntry < ActiveRecord::Base
   
   # Recorta el texto
   def self.content_brief(text)
-    max_length = 300
+    max_length = 250
     end_with = '...'
     text = helpers.strip_tags(text.gsub(/<\s*br\s*\/?>/i, ' ')) # take html tags away, with the special behaviour ofconverting <br> into spaces (More clear output).
     
