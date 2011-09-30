@@ -81,7 +81,10 @@ class BloggerFeed < ActiveRecord::Base
     
     # Options default values
     options[:force_reload] = false unless options.include? :force_reload
-    options[:load_max_results] ||= 2000
+    options[:load_max_results] ||= 10000
+
+    @max_results = ( options[:load_max_results] < 500 ? options[:load_max_results] : 500 )
+    @start_index = 1
     
     # Return data
     ret_data = {:created => 0, :updated => 0, :deleted => 0}
@@ -101,46 +104,58 @@ class BloggerFeed < ActiveRecord::Base
     # Url with parameters
     url = url_from_blog_id
     params = [] # parámetros que se le pueden pasar a Google Data API: http://code.google.com/intl/es-ES/apis/blogger/docs/2.0/developers_guide_protocol.html#RetrievingWithQuery
-    params << "max-results=#{options[:load_max_results]}" # el valor por defecto de blogger es 25, que es demasiado pequeño para este caso. Nosotros ponemos 1000 por defecto.
     if self.updated_from_source_timestamp.present? and not options[:force_reload] # cargar solo las entries que hayan sido modificadas.
       params << "orderby=updated" if self.updated_from_source_timestamp.present? # updated-min and updated-max parameters are ignored unless the orderby parameter is set to updated
       params << "updated-min=#{updated_from_source_timestamp.utc.iso8601}" # si no es RFC 3339 (que es el necesario) desde luego se le parece mucho
     end
-    url += '?'+params.join('&') unless params.empty?
+    url += '?'
+    url += params.join('&') unless params.empty?
     ret_data[:source_url] = url
-    
-    # Accessing Feeds
-    begin
-      http_response = client.get(url)
-    rescue GData::Client::UnknownError => http_error # Errors can be: http://gdata-ruby-util.googlecode.com/svn/trunk/doc/classes/GData/Client/Base.src/M000014.html
-      if http_error.response.status_code.to_s == '304' # esto no se considera un error poque hemos utilizado el http_header 'If-None-Match'
-       ret_data[:http_status] = "304, Not Modified"
-       return ret_data
-      else
-        raise http_error # error 3xx, 4xx, or 5xx
-      end
-    end
-    feed = http_response.to_xml
-  
-    # Copy data into BloggerFeed instance
-    self.attributes = self.attributes.merge BloggerFeed.attributes_from_xml_atom_feed(feed)
-    self.etag = http_response.headers['etag'] # se obtiene de la cabecera HTTP devuelta. Así se guarda para comprobar en la próxima llamada si han cambiado los datos.
     
     # Update or create new entries
     if options[:force_reload]
       ret_data[:deleted] = self.entries.size
       self.entries.clear
     end
-    feed.elements.each('entry') do |entry|
-      if not options[:force_reload] and (blogger_feed_entry = self.entries.find_by_entry_id entry.elements['id'].text)
-        blogger_feed_entry.update_attributes! BloggerFeedEntry.attributes_from_xml_atom_feed_entry(entry)
-        ret_data[:updated] += 1
-      else
-        self.entries.build BloggerFeedEntry.attributes_from_xml_atom_feed_entry(entry) # se guardan luego por el :autosave => true del has_many
-        ret_data[:created] += 1
+
+    page = 1
+    if (http_response = get_feed(client,url, page))
+      # De la primera página ( y solo de la primera página ) pillo los attributos y el etag
+      feed = http_response.to_xml
+      self.attributes = self.attributes.merge BloggerFeed.attributes_from_xml_atom_feed(feed)
+      self.etag = http_response.headers['etag'] # se obtiene de la cabecera HTTP devuelta. Así se guarda para comprobar en la próxima llamada si han cambiado los datos.
+
+      total_loaded_entries = 0
+      while feed
+        loaded_entries = 0
+        # Copy data into BloggerFeed instance
+        feed.elements.each('entry') do |entry|
+          if blogger_feed_entry = self.entries.find_by_entry_id(entry.elements['id'].text)
+            blogger_feed_entry.update_attributes! BloggerFeedEntry.attributes_from_xml_atom_feed_entry(entry)
+            ret_data[:updated] += 1
+          else
+            self.entries.build BloggerFeedEntry.attributes_from_xml_atom_feed_entry(entry) # se guardan luego por el :autosave => true del has_many
+            ret_data[:created] += 1
+          end
+          loaded_entries += 1
+        end
+        total_loaded_entries += loaded_entries
+
+        if total_loaded_entries < options[:load_max_results] && loaded_entries >= @max_results
+          # Si se me ha devuelto una pagina llena (loaded_entries = @max_results)
+          # y el total de entries cargadas aún es menor que el máximo a cargar.
+          page += 1
+          http_response = get_feed(client,url, page )
+          feed = http_response.to_xml
+        else
+          # En caso contrario paro:
+          #  - si la página estaba medio vacía o vacía (es que no hay más datos)
+          #  - si ha he cargado al menos las que me piden
+          feed = nil
+        end
       end
     end
-    
+
     # Guardar cambios
     self.updated_from_source_timestamp = Time.now.to_datetime # anotar el momento del cambio
     self.save!
@@ -193,6 +208,24 @@ class BloggerFeed < ActiveRecord::Base
   # Equivalencia entre blogID y la url en blogger donde obtener el RSS
   def url_from_blog_id
     "http://www.blogger.com/feeds/#{blog_id}/posts/default"
+  end
+
+private
+
+  def get_feed(client, url, page)
+    pagination = "&max-results=#{@max_results}&start-index=#{@start_index + (page-1)*@max_results}"
+    # Accessing Feeds
+    begin
+      puts (url + pagination)
+      http_response = client.get(url + pagination)
+    rescue GData::Client::UnknownError => http_error # Errors can be: http://gdata-ruby-util.googlecode.com/svn/trunk/doc/classes/GData/Client/Base.src/M000014.html
+      if http_error.response.status_code.to_s == '304' # esto no se considera un error poque hemos utilizado el http_header 'If-None-Match'
+        nil
+      else
+        raise http_error # error 3xx, 4xx, or 5xx
+      end
+    end
+    http_response
   end
   
 end
