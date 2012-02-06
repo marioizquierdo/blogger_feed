@@ -34,6 +34,7 @@ class BloggerFeedEntry < ActiveRecord::Base
   # y los atributos de este modelo
   def self.attributes_from_xml_atom_feed_entry(entry)
     content = entry.elements['content'] ? entry.elements['content'].text : (entry.elements['summary'] ? entry.elements['summary'].text : '')
+    content = content.gsub(/text-align: justify;/,'')
     summary = entry.elements['summary'] ? entry.elements['summary'].text : BloggerFeedEntry.content_brief(content)
     
     attrs = {
